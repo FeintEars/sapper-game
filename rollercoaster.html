@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html><body><canvas id="c"></canvas>
+<script src="https://cdn.babylonjs.com/babylon.js"></script>
+<script>
+var canvas=document.getElementById('c');canvas.width=512;canvas.height=512;
+var engine=new BABYLON.Engine(canvas,true,{preserveDrawingBuffer:true,stencil:false});
+var scene=new BABYLON.Scene(engine);
+scene.clearColor=new BABYLON.Color4(0.05,0.05,0.12,1);
+var camera=new BABYLON.UniversalCamera("cam",BABYLON.Vector3.Zero(),scene);camera.fov=0.85;
+new BABYLON.HemisphericLight("h1",new BABYLON.Vector3(0,1,0),scene).intensity=0.35;
+new BABYLON.DirectionalLight("d1",new BABYLON.Vector3(0.5,-1,0.3),scene).intensity=0.8;
+
+// ─── SIMPLEX 2D NOISE ───
+var F2=0.5*(Math.sqrt(3)-1),G2=(3-Math.sqrt(3))/6;
+var g3=[[1,1,0],[-1,1,0],[1,-1,0],[-1,-1,0],[1,0,1],[-1,0,1],[1,0,-1],[-1,0,-1],[0,1,1],[0,-1,1],[0,1,-1],[0,-1,-1]];
+var _p=[];for(var i=0;i<256;i++)_p[i]=Math.floor(Math.random()*256);
+var perm=[];for(var i=0;i<512;i++)perm[i]=_p[i&255];
+function s2d(x,y){
+  var s=(x+y)*F2,i=Math.floor(x+s),j=Math.floor(y+s),t=(i+j)*G2;
+  var x0=x-i+t,y0=y-j+t,i1,j1;x0>y0?(i1=1,j1=0):(i1=0,j1=1);
+  var x1=x0-i1+G2,y1=y0-j1+G2,x2=x0-1+2*G2,y2=y0-1+2*G2;
+  var ii=i&255,jj=j&255,gi0=perm[ii+perm[jj]]%12,gi1=perm[ii+i1+perm[jj+j1]]%12,gi2=perm[ii+1+perm[jj+1]]%12;
+  var t0=0.5-x0*x0-y0*y0,t1=0.5-x1*x1-y1*y1,t2=0.5-x2*x2-y2*y2;
+  var n0=0,n1=0,n2=0;
+  if(t0>0){t0*=t0;n0=t0*t0*(g3[gi0][0]*x0+g3[gi0][1]*y0);}
+  if(t1>0){t1*=t1;n1=t1*t1*(g3[gi1][0]*x1+g3[gi1][1]*y1);}
+  if(t2>0){t2*=t2;n2=t2*t2*(g3[gi2][0]*x2+g3[gi2][1]*y2);}
+  return 70*(n0+n1+n2);
+}
+
+// ─── NOISE TEXTURE ───
+var noiseTex=null;
+try{
+  var dt=new BABYLON.DynamicTexture("nt",256,scene,false);
+  var ctx=dt.getContext();
+  var imgData=ctx.createImageData(256,256);
+  for(var y=0;y<256;y++)for(var x=0;x<256;x++){
+    var n=s2d(x*0.04,y*0.04)*0.5+0.5;
+    var n2=s2d(x*0.08+100,y*0.08+100)*0.5+0.5;
+    var v=(n*0.6+n2*0.4)*255;
+    var idx=(y*256+x)*4;imgData.data[idx]=v;imgData.data[idx+1]=v;imgData.data[idx+2]=v;imgData.data[idx+3]=255;
+  }
+  ctx.putImageData(imgData,0,0);
+  dt.update();
+  dt.wrapU=dt.wrapV=BABYLON.Texture.WRAP_ADDRESSMODE;
+  noiseTex=dt;
+}catch(x){console.log("NT_ERR:"+x.message);}
+
+// ─── PBR MATERIAL ───
+function mkMat(baseColor,rough,metal){
+  var m=new BABYLON.PBRMaterial("m"+Math.random(),scene);
+  m.albedoColor=baseColor;m.roughness=rough||0.4;m.metallic=metal||0.1;
+  if(noiseTex){m.albedoTexture=noiseTex;m.albedoTextureIntensity=0.12;}
+  return m;
+}
+
+// ─── PATH ───
+var ptsRaw=[[0,0,0],[3,1,2],[7,4,4],[12,10,6],[16,18,5],[18,24,2],[20,26,0],[22,24,-2],[24,18,-4],[26,10,-3],[28,4,-1],[30,1,1],[33,3,4],[36,8,7],[38,12,6],[40,8,3],[42,3,0],[45,1,-2],[48,0,0]];
+var pts=[];for(var i=0;i<ptsRaw.length;i++)pts.push(new BABYLON.Vector3(ptsRaw[i][0],ptsRaw[i][1],ptsRaw[i][2]));
+var curve=BABYLON.Curve3.CreateCatmullRomSpline(pts,100);
+var pp=curve.getPoints();
+function getPos(t){var idx=t*(pp.length-1);var i0=Math.floor(idx);return BABYLON.Vector3.Lerp(pp[i0],pp[Math.min(i0+1,pp.length-1)],idx-i0);}
+
+// ─── TRACK (with vertex colors + simplex) ───
+var track=BABYLON.MeshBuilder.CreateTube("track",{path:pp,radius:0.25,cap:BABYLON.Mesh.CAP_END,tessellation:8},scene);
+track.convertToFlatShadedMesh();
+var tpos=track.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+var tvc=Math.floor(tpos.length/3);var tcols=[];var mn=Infinity,mx=-Infinity;
+for(var i=0;i<tvc;i++){var h=tpos[i*3+2];if(h<mn)mn=h;if(h>mx)mx=h;}
+for(var i=0;i<tvc;i++){
+  var h=tpos[i*3+2];var tb=(h-mn)/(mx-mn||1);
+  var ns=s2d(tpos[i*3]*0.3,tpos[i*3+1]*0.3+h*0.2)*0.5+0.5;
+  tcols.push(0.3+ns*0.1+tb*0.5,0.2+ns*0.05+(1-tb)*0.2+tb*0.3,0.5+ns*0.15+(1-tb)*0.3,1);
+}
+track.setVerticesData(BABYLON.VertexBuffer.ColorKind,tcols);
+track.material=mkMat(new BABYLON.Color3(0.5,0.4,0.5),0.3,0.05);
+
+// ─── SUPPORTS ───
+for(var i=0;i<pp.length;i+=6){
+  var p=pp[i];
+  var hgt=Math.max(p.z*0.8,0.3);
+  var pl=BABYLON.MeshBuilder.CreateCylinder("p"+i,{height:hgt,diameter:0.07},scene);
+  pl.position=new BABYLON.Vector3(p.x,p.y,-hgt/2);
+  pl.material=mkMat(new BABYLON.Color3(0.3,0.25,0.35),0.6,0.3);
+  var ppv=pl.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+  if(ppv){
+    var ppc=[];var pvc2=Math.floor(ppv.length/3);
+    for(var j=0;j<pvc2;j++){var pn=s2d(ppv[j*3]*0.5,ppv[j*3+1]*0.5)*0.5+0.5;ppc.push(0.25+pn*0.15,0.2+pn*0.1,0.3+pn*0.1,1);}
+    pl.setVerticesData(BABYLON.VertexBuffer.ColorKind,ppc);
+  }
+}
+
+// ─── GROUND ───
+var gd=BABYLON.MeshBuilder.CreateGround("g",{width:60,height:40,subdivisionsX:40,subdivisionsY:30},scene);
+gd.position=new BABYLON.Vector3(24,-2,0);
+gd.material=mkMat(new BABYLON.Color3(0.12,0.17,0.08),0.8,0);
+var gv=gd.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+if(gv){
+  var gvc=Math.floor(gv.length/3);var gc=[];
+  for(var i=0;i<gvc;i++){var gn=s2d(gv[i*3]*0.1,gv[i*3+1]*0.1)*0.5+0.5;gc.push(0.08+gn*0.1,0.12+gn*0.12,0.04+gn*0.06,1);}
+  gd.setVerticesData(BABYLON.VertexBuffer.ColorKind,gc);
+}
+
+// ─── CAR ───
+var car=new BABYLON.TransformNode("car");
+var bd=BABYLON.MeshBuilder.CreateBox("bd",{width:0.6,height:0.3,depth:0.4},scene);
+bd.parent=car;bd.position.y=0.1;
+bd.material=mkMat(new BABYLON.Color3(0.7,0.1,0.1),0.2,0.1);
+var bv=bd.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+if(bv){var bc=[];for(var i=0;i<Math.floor(bv.length/3);i++){bc.push(0.65,0.08,0.08,0.3);}bd.setVerticesData(BABYLON.VertexBuffer.ColorKind,bc);}
+
+for(var i=0;i<3;i++){
+  var hoop=BABYLON.MeshBuilder.CreateTorus("h"+i,{diameter:0.3,thickness:0.025},scene);
+  hoop.parent=car;hoop.position=new BABYLON.Vector3(-0.12+i*0.12,0.3,-0.05);hoop.rotation.x=Math.PI/2;
+  hoop.material=mkMat(new BABYLON.Color3(0.7,0.2,0.2),0.3,0.1);
+}
+
+// ─── ANIMATION ───
+var TOTAL=480,frame=0;
+window.renderFrame=function(){
+  if(frame>=TOTAL)return;
+  var t=frame/TOTAL;
+  var p=getPos(t);
+  car.position=p;
+  car.lookAt(getPos(Math.min(1,t+0.03)),0,0,0);
+  var m=car.getWorldMatrix();
+  var f=BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(0,0,1),m);
+  var u=BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(0,1,0),m);
+  camera.position.copyFrom(p.add(f.scale(0.15)).add(u.scale(0.3)));
+  camera.target=p.add(f.scale(5));
+  scene.render();frame++;
+};
+
+window._p5Ready=true;
+</script></body></html>
